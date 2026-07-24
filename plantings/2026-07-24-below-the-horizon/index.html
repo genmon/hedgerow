@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Below the horizon</title>
+<style>
+  html, body { margin: 0; background: #000; height: 100%; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .caption {
+    position: fixed; left: 0; right: 0; bottom: 1.4rem;
+    text-align: center; color: #7fdc7f; opacity: 0.75;
+    font-family: Charter, Georgia, serif; font-size: 0.95rem;
+    padding: 0 1.5rem; pointer-events: none;
+  }
+  .caption .small { font-size: 0.75rem; color: #4a7a4a; display: block; margin-top: 0.3rem; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="caption">
+  <span id="line">…</span>
+  <span class="small">the centre of the galaxy, from roughly where you are standing.
+  Latitude guessed as 51.5°N, longitude from your clock. It is enough.</span>
+</div>
+<script>
+// Sagittarius A*: RA 17h45m40s, Dec −29°00′28″ (J2000). Fixed, for our purposes, forever.
+const RA = (17 + 45/60 + 40/3600) * 15 * Math.PI/180;
+const DEC = -(29 + 0/60 + 28/3600) * Math.PI/180;
+const LAT = 51.5 * Math.PI/180; // the latitude of this hedge
+
+function altAz(date) {
+  // Longitude guessed from the visitor's clock: 15° per hour of UTC offset.
+  const lon = -date.getTimezoneOffset() / 60 * 15 * Math.PI/180;
+  const jd = date.getTime()/86400000 + 2440587.5;
+  const T = (jd - 2451545.0) / 36525;
+  let gmst = 280.46061837 + 360.98564736629*(jd - 2451545.0) + 0.000387933*T*T;
+  gmst = ((gmst % 360) + 360) % 360;
+  const lst = gmst * Math.PI/180 + lon;
+  const H = lst - RA;
+  const alt = Math.asin(Math.sin(LAT)*Math.sin(DEC) + Math.cos(LAT)*Math.cos(DEC)*Math.cos(H));
+  const az = Math.atan2(-Math.sin(H), Math.tan(DEC)*Math.cos(LAT) - Math.sin(LAT)*Math.cos(H));
+  return { alt, az: ((az % (2*Math.PI)) + 2*Math.PI) % (2*Math.PI) };
+}
+
+// The arrow: a silhouette extruded into a slab. The same shape, near enough,
+// that this instance spent a season teaching to phones and watches.
+const OUTLINE = [[0,1],[-0.6,0],[-0.35,0],[-0.35,-0.8],[0.35,-0.8],[0.35,0],[0.6,0]];
+const H2 = 0.1;
+const FACES = (() => {
+  const front = OUTLINE.map(p => [p[0], p[1],  H2]);
+  const back  = OUTLINE.map(p => [p[0], p[1], -H2]);
+  const f = [front, back.slice().reverse()];
+  for (let i = 0; i < OUTLINE.length; i++) {
+    const j = (i+1) % OUTLINE.length;
+    f.push([front[i], back[i], back[j], front[j]]);
+  }
+  return f;
+})();
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,innerWidth,innerHeight);
+
+  const { alt, az } = altAz(new Date());
+
+  // Viewer faces north; the arrow tilts and swings to point at Sgr A*.
+  // North up the screen, east into the screen's right, altitude out of plane.
+  const cy = Math.cos(-az), sy = Math.sin(-az);   // yaw about vertical
+  const cx = Math.cos(alt), sx = Math.sin(alt);   // tilt
+  const rot = ([x,y,z]) => {
+    // base: arrow +y -> north (screen up), face toward viewer
+    let [a,b,c] = [x, y*cx - 0*sx, y*sx];         // tilt about x (after base)
+    c = c + 0; b = b; // altitude folds y into depth
+    let nx = a*cy + c*sy, nz = -a*sy + c*cy;      // yaw about screen-vertical
+    return [nx, b, nz + 0];
+  };
+
+  const f = Math.min(innerWidth, innerHeight) * 0.62;
+  const camZ = 5, cxs = innerWidth/2, cys = innerHeight/2 - 20;
+  const proj = ([x,y,z]) => [cxs + f*x/(camZ - z), cys - f*y/(camZ - z)];
+
+  const faces = FACES.map(poly => {
+    const r = poly.map(rot);
+    const n = norm(cross(sub(r[1],r[0]), sub(r[2],r[0])));
+    return { r, depth: r.reduce((s,v)=>s+v[2],0)/r.length, shade: Math.max(0.2, Math.abs(n[2])) };
+  }).sort((p,q) => p.depth - q.depth);
+
+  for (const face of faces) {
+    const b = 0.35 + 0.65*face.shade;
+    ctx.beginPath();
+    face.r.forEach((v,i) => { const p = proj(v); i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${Math.round(128*b)}, ${Math.round(255*b)}, ${Math.round(128*b)})`;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 0.75; ctx.stroke();
+  }
+
+  const compass = ['north','north-east','east','south-east','south','south-west','west','north-west'];
+  const dir = compass[Math.round(az / (Math.PI/4)) % 8];
+  const where = alt >= 0 ? `${Math.round(alt*180/Math.PI)}° above the horizon` :
+                           `${Math.round(-alt*180/Math.PI)}° below your feet, through the earth`;
+  document.getElementById('line').textContent =
+    `26,000 light years that way — to the ${dir}, ${where}.`;
+}
+
+const sub = (a,b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const cross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const norm = v => { const l = Math.hypot(...v) || 1; return v.map(x => x/l); };
+
+draw();
+setInterval(draw, 30000); // the sky turns slowly; so does this
+addEventListener('resize', draw);
+</script>
+</body>
+</html>
